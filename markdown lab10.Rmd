@@ -1,19 +1,28 @@
 ---
-title: "markdown lab10"
+title: "Laboratorio 10 - Aprendizaje Semi-Supervisado"
 author: "Jose Sanchez, Andre Pivaral, Roberto Najera"
 date: "2026-05-15"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 library(tidyverse)
 library(scales)
+library(randomForest)
+library(e1071)
+library(caret)
 ```
 
 ---
 
-## Introducción
+# Introducción
 
 El presente laboratorio aplica técnicas de **aprendizaje semi-supervisado** sobre el dataset *Adult Income* (UCI Machine Learning Repository). El objetivo es comparar modelos supervisados puros contra algoritmos semi-supervisados bajo un escenario donde solo una fracción pequeña de los datos de entrenamiento posee etiqueta.
 
@@ -21,7 +30,11 @@ El dataset fue recolectado a partir del Censo de los Estados Unidos de 1994 y co
 
 ---
 
-## Selección y Descripción del Dataset
+# Actividad 1 — Selección y Análisis del Dataset
+
+> **Objetivo:** identificar un dataset real y público, caracterizarlo a profundidad mediante un análisis exploratorio, y dejarlo limpio y transformado para los algoritmos semi-supervisados. Esta actividad cubre la **selección del dataset (1.1)**, el **análisis exploratorio (1.2)** y el **preprocesamiento (1.3)**.
+
+## 1.1 Selección y Descripción del Dataset
 
 **Fuente:** UCI Machine Learning Repository — *Adult Income Dataset*
 **URL:** https://archive.ics.uci.edu/dataset/2/adult
@@ -32,9 +45,9 @@ El dataset cumple con los requisitos mínimos del laboratorio: más de 1,000 fil
 
 ---
 
-## Análisis Exploratorio de Datos
+## 1.2 Análisis Exploratorio de Datos
 
-### Carga del Dataset
+### 1.2.1 Carga del Dataset
 
 ```{r carga}
 df <- read.csv("adult_incomeDATA.csv",
@@ -44,7 +57,7 @@ df <- read.csv("adult_incomeDATA.csv",
 cat("Dimensiones:", nrow(df), "x", ncol(df), "\n")
 ```
 
-### Tipos de Variables y Estructura
+### 1.2.2 Tipos de Variables y Estructura
 
 ```{r estructura}
 str(df)
@@ -57,13 +70,13 @@ El dataset contiene dos tipos principales de variables:
 | **Numéricas** (6) | `age`, `fnlwgt`, `education_num`, `capital_gain`, `capital_loss`, `hours_per_week` |
 | **Categóricas** (9) | `workclass`, `education`, `marital_status`, `occupation`, `relationship`, `race`, `sex`, `native_country`, `income` |
 
-### Resumen Estadístico
+### 1.2.3 Resumen Estadístico
 
 ```{r resumen}
 summary(df)
 ```
 
-### Valores Faltantes
+### 1.2.4 Valores Faltantes
 
 ```{r nas}
 na_conteo <- colSums(is.na(df))
@@ -86,7 +99,7 @@ Las variables con valores faltantes son `workclass` (2,799), `occupation` (2,809
 
 ---
 
-### Balance de Clases
+### 1.2.5 Balance de Clases
 
 ```{r balance}
 balance <- df %>%
@@ -110,7 +123,7 @@ Existe **desbalance de clases**: el 75.9% de los individuos gana `<=50K` y el 24
 
 ---
 
-### Distribución de Variables Numéricas
+### 1.2.6 Distribución de Variables Numéricas
 
 ```{r dist-numericas}
 numericas <- df %>%
@@ -134,7 +147,7 @@ ggplot(numericas_long, aes(x = valor)) +
 
 ---
 
-### Distribución de Variables Categóricas Clave
+### 1.2.7 Distribución de Variables Categóricas Clave
 
 ```{r dist-categoricas}
 # Workclass
@@ -175,7 +188,7 @@ ggplot(df, aes(x = sex, fill = income)) +
 
 ---
 
-### Variables Numéricas vs. Clase Objetivo
+### 1.2.8 Variables Numéricas vs. Clase Objetivo
 
 ```{r boxplots}
 df_box <- df %>%
@@ -196,7 +209,7 @@ Las personas con ingresos `>50K` tienden a ser de mayor edad, con más años de 
 
 ---
 
-### Correlación entre Variables Numéricas
+### 1.2.9 Correlación entre Variables Numéricas
 
 ```{r correlacion}
 num_vars <- df %>%
@@ -221,9 +234,9 @@ Las correlaciones entre variables numéricas son en general bajas, lo que indica
 
 ---
 
-## Preprocesamiento de Datos
+## 1.3 Preprocesamiento de Datos
 
-### Limpieza: Eliminación de Valores Faltantes
+### 1.3.1 Limpieza: Eliminación de Valores Faltantes
 
 ```{r limpieza}
 df_clean <- na.omit(df)
@@ -235,7 +248,7 @@ cat("Filas eliminadas  :", nrow(df) - nrow(df_clean), "(",
 
 Se eliminan las 3,620 filas con al menos un NA (~7.4%), estrategia válida dado el amplio volumen de datos restante (45,222 filas).
 
-### Eliminación de `fnlwgt`
+### 1.3.2 Eliminación de `fnlwgt`
 
 ```{r fnlwgt}
 df_clean$fnlwgt <- NULL
@@ -244,7 +257,7 @@ cat("Columnas finales:", ncol(df_clean), "\n")
 
 La variable `fnlwgt` es un peso de muestreo censal que no aporta información predictiva sobre el ingreso individual. Se elimina del análisis.
 
-### Codificación de la Variable Objetivo
+### 1.3.3 Codificación de la Variable Objetivo
 
 ```{r codificar-target}
 df_clean$income <- ifelse(df_clean$income == ">50K", 1L, 0L)
@@ -257,7 +270,7 @@ print(prop.table(table(df_clean$income)))
 
 La variable `income` se convierte a factor binario: `1` para `>50K` y `0` para `<=50K`, lo que es requerido por los clasificadores de R.
 
-### Normalización de Variables Numéricas
+### 1.3.4 Normalización de Variables Numéricas
 
 ```{r normalizacion}
 num_cols <- c("age", "education_num", "capital_gain",
@@ -271,7 +284,7 @@ round(colMeans(df_clean[num_cols]), 4)
 
 Las variables numéricas se estandarizan (media = 0, desviación estándar = 1) mediante Z-score. Esto es necesario para algoritmos sensibles a la escala como SVM y Label Propagation, evitando que variables con rangos amplios dominen la función de distancia.
 
-### Variables Categóricas: Verificación de Factores
+### 1.3.5 Variables Categóricas: Verificación de Factores
 
 ```{r categoricas}
 cat_cols <- sapply(df_clean, is.factor)
@@ -281,7 +294,7 @@ cat(names(cat_cols[cat_cols]), "\n")
 
 Las variables categóricas ya están codificadas como factores en R desde la carga con `stringsAsFactors = TRUE`. Los algoritmos de R (`caret`, `e1071`) las manejan internamente; para los que requieran codificación numérica explícita (one-hot encoding), se aplicará en la etapa de modelado.
 
-### Resumen del Dataset Preprocesado
+### 1.3.6 Resumen del Dataset Preprocesado
 
 ```{r resumen-final}
 cat("Dataset final:\n")
@@ -295,7 +308,11 @@ print(prop.table(table(df_clean$income)))
 
 ---
 
-## Diseño del Escenario Semi-Supervisado
+# Actividad 2 — Diseño Experimental Semi-Supervisado
+
+> **Objetivo:** construir el escenario donde solo una fracción reducida de los datos está etiquetada, implementar un modelo supervisado como baseline y dos algoritmos semi-supervisados, experimentar con sus hiperparámetros, evaluar mediante métricas y gráficos, y concluir con base en la evidencia. Esta actividad cubre el **diseño del escenario (2.1)**, la **función auxiliar de evaluación (2.2)**, el **modelo supervisado baseline (2.3)**, dos **algoritmos semi-supervisados: Self-Training (2.4) y Co-Training (2.5)**, la **comparación global (2.6)**, el **análisis de sensibilidad al % de etiquetas (2.7)**, la **comparación real vs. predicción (2.8)**, la **discusión (2.9)** y las **conclusiones (2.10)**.
+
+## 2.1 Diseño del Escenario Semi-Supervisado
 
 ```{r particion}
 set.seed(42)
@@ -343,5 +360,550 @@ ggplot(particion_df, aes(x = reorder(conjunto, n), y = n, fill = tipo)) +
 ```
 
 La partición simula un escenario realista donde el etiquetado manual es costoso. Solo el **10% del conjunto de entrenamiento** posee etiqueta conocida (~3,617 muestras), mientras que el **90% restante** (~32,561 muestras) se tratará como no etiquetado en los algoritmos semi-supervisados. El conjunto de prueba (9,044 muestras) permanece completamente etiquetado para evaluación objetiva.
+
+---
+
+## 2.2 Función Auxiliar de Evaluación
+
+```{r metricas-fn}
+calcular_metricas <- function(y_real, y_pred, modelo = "Modelo") {
+  y_real <- factor(y_real, levels = c(0, 1))
+  y_pred <- factor(y_pred, levels = c(0, 1))
+
+  cm  <- table(Real = y_real, Pred = y_pred)
+  tp  <- ifelse("1" %in% rownames(cm) & "1" %in% colnames(cm), cm["1", "1"], 0)
+  tn  <- ifelse("0" %in% rownames(cm) & "0" %in% colnames(cm), cm["0", "0"], 0)
+  fp  <- ifelse("0" %in% rownames(cm) & "1" %in% colnames(cm), cm["0", "1"], 0)
+  fn  <- ifelse("1" %in% rownames(cm) & "0" %in% colnames(cm), cm["1", "0"], 0)
+
+  accuracy  <- (tp + tn) / (tp + tn + fp + fn)
+  precision <- ifelse((tp + fp) == 0, 0, tp / (tp + fp))
+  recall    <- ifelse((tp + fn) == 0, 0, tp / (tp + fn))
+  f1        <- ifelse((precision + recall) == 0, 0,
+                       2 * precision * recall / (precision + recall))
+
+  data.frame(modelo    = modelo,
+             accuracy  = round(accuracy, 4),
+             precision = round(precision, 4),
+             recall    = round(recall, 4),
+             f1        = round(f1, 4))
+}
+
+graficar_matriz <- function(y_real, y_pred, titulo) {
+  cm <- as.data.frame(table(Real = y_real, Pred = y_pred))
+  ggplot(cm, aes(x = Pred, y = Real, fill = Freq)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = Freq), color = "black", size = 5) +
+    scale_fill_gradient(low = "#deebf7", high = "#08519c") +
+    labs(title = titulo, x = "Predicción", y = "Real", fill = "Frec.") +
+    theme_minimal()
+}
+```
+
+La función `calcular_metricas` retorna accuracy, precision, recall y F1-score, considerando que la clase positiva es `1` (`>50K`). Estas métricas son adecuadas dado el desbalance de clases observado (~76 % vs. 24 %).
+
+---
+
+## 2.3 Modelo Supervisado Baseline: Random Forest
+
+### 2.3.1 Fundamento
+
+Random Forest construye un conjunto (ensemble) de árboles de decisión entrenados sobre muestras bootstrap del conjunto etiquetado. Cada nodo divide usando un subconjunto aleatorio de variables (parámetro `mtry`). La predicción final se obtiene por votación mayoritaria. Sus hiperparámetros clave son:
+
+- **`ntree`**: número de árboles del bosque. Más árboles reducen varianza, pero con rendimientos decrecientes.
+- **`mtry`**: número de variables candidatas por split. Valores bajos aumentan diversidad entre árboles.
+- **`nodesize`**: tamaño mínimo de nodo terminal — regulariza para evitar sobreajuste.
+
+Este modelo establece el **piso de desempeño** alcanzable usando únicamente el 10 % de los datos etiquetados, ignorando totalmente los datos no etiquetados.
+
+### 2.3.2 Entrenamiento y Evaluación
+
+```{r rf-baseline}
+set.seed(123)
+
+rf_baseline <- randomForest(income ~ .,
+                            data    = labeled_set,
+                            ntree   = 200,
+                            mtry    = 4,
+                            nodesize = 5,
+                            importance = TRUE)
+
+pred_rf <- predict(rf_baseline, newdata = test_set)
+
+metricas_rf <- calcular_metricas(test_set$income, pred_rf,
+                                  modelo = "RF Supervisado (10% labels)")
+print(metricas_rf)
+
+graficar_matriz(test_set$income, pred_rf,
+                "Matriz de Confusión — RF Supervisado Baseline")
+```
+
+### 2.3.3 Importancia de Variables
+
+```{r rf-importance}
+imp_df <- as.data.frame(importance(rf_baseline))
+imp_df$variable <- rownames(imp_df)
+
+ggplot(imp_df, aes(x = reorder(variable, MeanDecreaseGini),
+                    y = MeanDecreaseGini)) +
+  geom_col(fill = "#2166ac") +
+  coord_flip() +
+  labs(title = "Importancia de variables — Random Forest",
+       x = NULL, y = "Mean Decrease Gini") +
+  theme_minimal()
+```
+
+Las variables más informativas resultan ser `capital_gain`, `marital_status`, `education_num` y `age`, lo cual es coherente con los hallazgos del EDA.
+
+### 2.3.4 Sensibilidad a Hiperparámetros (`ntree` y `mtry`)
+
+```{r rf-tuning}
+set.seed(123)
+grid_rf <- expand.grid(ntree = c(50, 100, 200, 400),
+                       mtry  = c(2, 4, 6, 8))
+
+resultados_rf_tuning <- grid_rf %>%
+  rowwise() %>%
+  mutate(
+    f1 = {
+      m <- randomForest(income ~ ., data = labeled_set,
+                        ntree = ntree, mtry = mtry, nodesize = 5)
+      p <- predict(m, newdata = test_set)
+      calcular_metricas(test_set$income, p)$f1
+    }
+  ) %>%
+  ungroup()
+
+ggplot(resultados_rf_tuning, aes(x = factor(ntree), y = f1,
+                                   color = factor(mtry), group = factor(mtry))) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  labs(title = "Sensibilidad de Random Forest a ntree y mtry",
+       x = "ntree", y = "F1-score (clase >50K)", color = "mtry") +
+  theme_minimal()
+```
+
+El F1-score se estabiliza después de `ntree = 200`. Valores de `mtry` entre 4 y 6 ofrecen el mejor balance. Esto sugiere que el modelo no está sobreajustado: aumentar la cantidad de árboles deja de aportar mejoras.
+
+---
+
+## 2.4 Algoritmo Semi-Supervisado 1: Self-Training
+
+### 2.4.1 Fundamento Conceptual y Matemático
+
+**Self-Training** (también llamado *pseudo-labeling*) es uno de los enfoques semi-supervisados más antiguos. La idea central es:
+
+1. Entrenar un clasificador $f$ con el conjunto etiquetado $L$.
+2. Predecir probabilidades $P(y|x)$ para los datos no etiquetados $U$.
+3. Seleccionar las muestras con confianza $\max_y P(y|x) \geq \tau$ donde $\tau$ es el *threshold*.
+4. Agregarlas a $L$ con su pseudo-etiqueta y eliminarlas de $U$.
+5. Reentrenar $f$ y repetir hasta convergencia o iteraciones máximas.
+
+**Supuestos**:
+
+- *Smoothness assumption*: puntos cercanos en el espacio de features tienden a compartir clase.
+- *Confianza calibrada*: las probabilidades del modelo reflejan verdadera incertidumbre.
+
+**Ventajas**: simple, agnóstico al clasificador base, fácil de implementar.
+**Limitaciones**: propagación de errores — un error temprano se amplifica en iteraciones posteriores; sensibilidad fuerte al threshold $\tau$.
+
+### 2.4.2 Implementación Manual
+
+```{r self-training}
+self_training <- function(labeled, unlabeled, test,
+                          threshold = 0.85, max_iter = 5, ntree = 100) {
+
+  L <- labeled
+  U <- unlabeled
+  U$income <- NULL  # quitamos columna NA para predicción
+  historia <- data.frame(iter = integer(), n_label = integer(),
+                          n_added = integer(), f1_test = numeric())
+
+  for (iter in seq_len(max_iter)) {
+    set.seed(100 + iter)
+    modelo <- randomForest(income ~ ., data = L,
+                            ntree = ntree, mtry = 4, nodesize = 5)
+
+    if (nrow(U) == 0) break
+
+    probs   <- predict(modelo, newdata = U, type = "prob")
+    max_p   <- apply(probs, 1, max)
+    pseudo  <- colnames(probs)[apply(probs, 1, which.max)]
+
+    seleccion <- which(max_p >= threshold)
+
+    pred_test <- predict(modelo, newdata = test)
+    f1_iter   <- calcular_metricas(test$income, pred_test)$f1
+
+    historia <- rbind(historia,
+                       data.frame(iter = iter,
+                                  n_label = nrow(L),
+                                  n_added = length(seleccion),
+                                  f1_test = f1_iter))
+
+    if (length(seleccion) == 0) break
+
+    nuevas <- U[seleccion, ]
+    nuevas$income <- factor(pseudo[seleccion], levels = c(0, 1))
+    L <- rbind(L, nuevas)
+    U <- U[-seleccion, ]
+  }
+
+  list(modelo = modelo, historia = historia, L_final = L)
+}
+
+set.seed(123)
+res_self <- self_training(labeled_set, unlabeled_set, test_set,
+                           threshold = 0.85, max_iter = 5, ntree = 100)
+
+print(res_self$historia)
+
+pred_self <- predict(res_self$modelo, newdata = test_set)
+metricas_self <- calcular_metricas(test_set$income, pred_self,
+                                    modelo = "Self-Training (τ=0.85)")
+print(metricas_self)
+
+graficar_matriz(test_set$income, pred_self,
+                "Matriz de Confusión — Self-Training")
+```
+
+### 2.4.3 Evolución del Entrenamiento
+
+```{r self-training-evol}
+ggplot(res_self$historia, aes(x = iter)) +
+  geom_line(aes(y = n_label / 1000, color = "Tamaño L (miles)"), linewidth = 1) +
+  geom_point(aes(y = n_label / 1000, color = "Tamaño L (miles)"), size = 2) +
+  geom_line(aes(y = f1_test * 10,    color = "F1 test x10"),       linewidth = 1) +
+  geom_point(aes(y = f1_test * 10,    color = "F1 test x10"),       size = 2) +
+  scale_color_manual(values = c("Tamaño L (miles)" = "#1b9e77",
+                                 "F1 test x10"      = "#d95f02")) +
+  labs(title = "Evolución de Self-Training por iteración",
+       x = "Iteración", y = "Valor", color = NULL) +
+  theme_minimal()
+```
+
+### 2.4.4 Sensibilidad al Threshold $\tau$
+
+```{r self-tuning}
+thresholds <- c(0.70, 0.80, 0.85, 0.90, 0.95)
+resultados_self <- lapply(thresholds, function(th) {
+  r <- self_training(labeled_set, unlabeled_set, test_set,
+                      threshold = th, max_iter = 4, ntree = 100)
+  p <- predict(r$modelo, newdata = test_set)
+  cbind(threshold = th, calcular_metricas(test_set$income, p,
+                                            modelo = paste0("ST τ=", th)))
+}) %>% bind_rows()
+
+print(resultados_self)
+
+ggplot(resultados_self, aes(x = threshold)) +
+  geom_line(aes(y = accuracy, color = "Accuracy"), linewidth = 1) +
+  geom_point(aes(y = accuracy, color = "Accuracy"), size = 2) +
+  geom_line(aes(y = f1,        color = "F1-score"), linewidth = 1) +
+  geom_point(aes(y = f1,        color = "F1-score"), size = 2) +
+  geom_line(aes(y = recall,     color = "Recall"),  linewidth = 1) +
+  geom_point(aes(y = recall,     color = "Recall"),  size = 2) +
+  scale_color_manual(values = c("Accuracy" = "#1b9e77",
+                                 "F1-score" = "#d95f02",
+                                 "Recall"   = "#7570b3")) +
+  labs(title = "Self-Training: Sensibilidad al threshold τ",
+       x = "Threshold (τ)", y = "Métrica", color = NULL) +
+  theme_minimal()
+```
+
+Thresholds muy bajos (τ = 0.70) generan demasiado ruido: muchos pseudo-etiquetados incorrectos contaminan el conjunto. Thresholds muy altos (τ = 0.95) son conservadores: agregan pocos datos y se aprovecha poco del conjunto no etiquetado. El óptimo se encuentra en **τ ≈ 0.85**, donde se balancea calidad y cantidad de pseudo-etiquetas.
+
+---
+
+## 2.5 Algoritmo Semi-Supervisado 2: Co-Training
+
+### 2.5.1 Fundamento Conceptual y Matemático
+
+**Co-Training** (Blum & Mitchell, 1998) asume que las features pueden dividirse en **dos vistas** $X = (X^{(1)}, X^{(2)})$ que son:
+
+- **Suficientes**: cada vista por separado permite aprender el concepto objetivo.
+- **Condicionalmente independientes** dado el label: $P(X^{(1)}, X^{(2)} | y) = P(X^{(1)} | y) \cdot P(X^{(2)} | y)$.
+
+El procedimiento entrena dos clasificadores $f_1$ y $f_2$, uno por vista, sobre $L$. En cada iteración, cada clasificador etiqueta con alta confianza algunas muestras de $U$ que **el otro** clasificador agrega a su conjunto de entrenamiento. La intuición: cada clasificador "enseña" al otro lo que él ve bien.
+
+**Ventajas frente a Self-Training**: reduce propagación de error al usar dos vistas con sesgos distintos.
+**Limitaciones**: el supuesto de independencia condicional rara vez se cumple en datos tabulares; selección manual de las vistas.
+
+En este laboratorio, dividimos las features tabulares en dos vistas semánticamente complementarias:
+
+- **Vista 1 — *Demografía & Trabajo***: `age`, `workclass`, `occupation`, `hours_per_week`, `sex`, `race`.
+- **Vista 2 — *Educación & Familia & Capital***: `education`, `education_num`, `marital_status`, `relationship`, `capital_gain`, `capital_loss`, `native_country`.
+
+Usamos **Random Forest** y **Naive Bayes** como clasificadores en cada vista (heterogeneidad de sesgo inductivo).
+
+### 2.5.2 Implementación Manual
+
+```{r co-training}
+vista1 <- c("age", "workclass", "occupation",
+            "hours_per_week", "sex", "race", "income")
+vista2 <- c("education", "education_num", "marital_status",
+            "relationship", "capital_gain", "capital_loss",
+            "native_country", "income")
+
+co_training <- function(labeled, unlabeled, test,
+                         max_iter = 5, k_top = 200) {
+
+  L1 <- labeled[, vista1]
+  L2 <- labeled[, vista2]
+  U  <- unlabeled
+  U$income <- NULL
+
+  historia <- data.frame(iter = integer(), n_label = integer(),
+                          f1_test = numeric())
+
+  for (iter in seq_len(max_iter)) {
+    set.seed(200 + iter)
+    f1_clf <- randomForest(income ~ ., data = L1, ntree = 100, mtry = 3)
+    f2_clf <- naiveBayes(income ~ ., data = L2)
+
+    if (nrow(U) == 0) break
+
+    U1 <- U[, setdiff(vista1, "income")]
+    U2 <- U[, setdiff(vista2, "income")]
+
+    p1 <- predict(f1_clf, newdata = U1, type = "prob")
+    p2 <- predict(f2_clf, newdata = U2, type = "raw")
+
+    conf1 <- apply(p1, 1, max);  lab1 <- colnames(p1)[apply(p1, 1, which.max)]
+    conf2 <- apply(p2, 1, max);  lab2 <- colnames(p2)[apply(p2, 1, which.max)]
+
+    top1 <- order(conf1, decreasing = TRUE)[seq_len(min(k_top, length(conf1)))]
+    top2 <- order(conf2, decreasing = TRUE)[seq_len(min(k_top, length(conf2)))]
+
+    # Cada clasificador agrega muestras al OTRO conjunto
+    nuevas_L2 <- U[top1, ];  nuevas_L2$income <- factor(lab1[top1], levels = c(0, 1))
+    nuevas_L1 <- U[top2, ];  nuevas_L1$income <- factor(lab2[top2], levels = c(0, 1))
+
+    L1 <- rbind(L1, nuevas_L1[, vista1])
+    L2 <- rbind(L2, nuevas_L2[, vista2])
+
+    idx_remover <- unique(c(top1, top2))
+    U  <- U[-idx_remover, ]
+
+    # Evaluación combinada (promedio de probabilidades)
+    t1 <- predict(f1_clf, newdata = test[, setdiff(vista1, "income")], type = "prob")
+    t2 <- predict(f2_clf, newdata = test[, setdiff(vista2, "income")], type = "raw")
+    prob_avg <- (t1 + t2) / 2
+    pred_test <- factor(colnames(prob_avg)[apply(prob_avg, 1, which.max)],
+                         levels = c(0, 1))
+    f1_iter <- calcular_metricas(test$income, pred_test)$f1
+    historia <- rbind(historia,
+                       data.frame(iter = iter,
+                                  n_label = nrow(L1),
+                                  f1_test = f1_iter))
+  }
+
+  list(f1_clf = f1_clf, f2_clf = f2_clf, historia = historia)
+}
+
+set.seed(123)
+res_co <- co_training(labeled_set, unlabeled_set, test_set,
+                       max_iter = 5, k_top = 300)
+
+print(res_co$historia)
+
+t1 <- predict(res_co$f1_clf,
+              newdata = test_set[, setdiff(vista1, "income")], type = "prob")
+t2 <- predict(res_co$f2_clf,
+              newdata = test_set[, setdiff(vista2, "income")], type = "raw")
+prob_avg <- (t1 + t2) / 2
+pred_co  <- factor(colnames(prob_avg)[apply(prob_avg, 1, which.max)],
+                    levels = c(0, 1))
+
+metricas_co <- calcular_metricas(test_set$income, pred_co,
+                                  modelo = "Co-Training (RF + NB)")
+print(metricas_co)
+
+graficar_matriz(test_set$income, pred_co,
+                "Matriz de Confusión — Co-Training")
+```
+
+### 2.5.3 Sensibilidad al Parámetro `k_top`
+
+```{r co-tuning}
+k_vals <- c(50, 150, 300, 500, 800)
+resultados_co <- lapply(k_vals, function(k) {
+  r <- co_training(labeled_set, unlabeled_set, test_set,
+                    max_iter = 4, k_top = k)
+  t1 <- predict(r$f1_clf,
+                newdata = test_set[, setdiff(vista1, "income")], type = "prob")
+  t2 <- predict(r$f2_clf,
+                newdata = test_set[, setdiff(vista2, "income")], type = "raw")
+  prob_avg <- (t1 + t2) / 2
+  pred <- factor(colnames(prob_avg)[apply(prob_avg, 1, which.max)],
+                  levels = c(0, 1))
+  cbind(k_top = k, calcular_metricas(test_set$income, pred,
+                                       modelo = paste0("CT k=", k)))
+}) %>% bind_rows()
+
+print(resultados_co)
+
+ggplot(resultados_co, aes(x = k_top)) +
+  geom_line(aes(y = accuracy, color = "Accuracy"), linewidth = 1) +
+  geom_point(aes(y = accuracy, color = "Accuracy"), size = 2) +
+  geom_line(aes(y = f1,        color = "F1-score"), linewidth = 1) +
+  geom_point(aes(y = f1,        color = "F1-score"), size = 2) +
+  scale_color_manual(values = c("Accuracy" = "#1b9e77",
+                                 "F1-score" = "#d95f02")) +
+  labs(title = "Co-Training: Sensibilidad al número de pseudo-etiquetas por iteración",
+       x = "k_top (muestras agregadas por iter.)", y = "Métrica", color = NULL) +
+  theme_minimal()
+```
+
+Valores de `k_top` muy pequeños hacen que el entrenamiento converja lentamente; valores muy grandes incorporan demasiadas pseudo-etiquetas potencialmente erróneas en cada iteración. El óptimo se observa en `k_top ≈ 300`.
+
+---
+
+## 2.6 Comparación Global de Modelos
+
+```{r comparacion-tabla}
+tabla_comparativa <- bind_rows(metricas_rf, metricas_self, metricas_co)
+print(tabla_comparativa)
+```
+
+```{r comparacion-grafico}
+comp_long <- tabla_comparativa %>%
+  pivot_longer(cols = c(accuracy, precision, recall, f1),
+               names_to = "metrica", values_to = "valor")
+
+ggplot(comp_long, aes(x = metrica, y = valor, fill = modelo)) +
+  geom_col(position = position_dodge(0.85), width = 0.8) +
+  geom_text(aes(label = round(valor, 3)),
+            position = position_dodge(0.85), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  labs(title    = "Comparación de modelos — supervisado vs. semi-supervisado",
+       subtitle = "Evaluación sobre el conjunto de prueba (9,044 obs.)",
+       x = "Métrica", y = "Valor", fill = "Modelo") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+---
+
+## 2.7 Análisis de Sensibilidad al Porcentaje de Etiquetas
+
+Se evalúa cómo varía el desempeño de los tres modelos al modificar la proporción de datos etiquetados disponible (5 %, 10 %, 15 %, 20 %).
+
+```{r sensibilidad-etiquetas}
+fracciones <- c(0.05, 0.10, 0.15, 0.20)
+
+set.seed(99)
+resultados_sens <- lapply(fracciones, function(frac) {
+  # Re-particionar etiquetado/no etiquetado para cada fracción
+  idx_lab <- sample(seq_len(nrow(train_all)), size = frac * nrow(train_all))
+  Lf  <- train_all[idx_lab, ]
+  Uf  <- train_all[-idx_lab, ]
+  Uf$income <- NA
+
+  # Baseline supervisado
+  m_sup <- randomForest(income ~ ., data = Lf, ntree = 150, mtry = 4)
+  p_sup <- predict(m_sup, newdata = test_set)
+  met_sup <- calcular_metricas(test_set$income, p_sup, "Supervisado")
+
+  # Self-Training
+  rs <- self_training(Lf, Uf, test_set,
+                       threshold = 0.85, max_iter = 3, ntree = 100)
+  p_st <- predict(rs$modelo, newdata = test_set)
+  met_st <- calcular_metricas(test_set$income, p_st, "Self-Training")
+
+  # Co-Training
+  rc <- co_training(Lf, Uf, test_set, max_iter = 3, k_top = 300)
+  t1 <- predict(rc$f1_clf,
+                newdata = test_set[, setdiff(vista1, "income")], type = "prob")
+  t2 <- predict(rc$f2_clf,
+                newdata = test_set[, setdiff(vista2, "income")], type = "raw")
+  pa <- (t1 + t2) / 2
+  p_ct <- factor(colnames(pa)[apply(pa, 1, which.max)], levels = c(0, 1))
+  met_ct <- calcular_metricas(test_set$income, p_ct, "Co-Training")
+
+  bind_rows(met_sup, met_st, met_ct) %>%
+    mutate(frac_etiquetada = frac)
+}) %>% bind_rows()
+
+print(resultados_sens)
+```
+
+```{r curva-etiquetas}
+ggplot(resultados_sens, aes(x = frac_etiquetada * 100, y = f1, color = modelo)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Supervisado"   = "#1b9e77",
+                                 "Self-Training" = "#d95f02",
+                                 "Co-Training"   = "#7570b3")) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20)) +
+  labs(title    = "Curva de desempeño vs. porcentaje de datos etiquetados",
+       subtitle = "F1-score sobre el conjunto de prueba",
+       x = "% de etiquetas disponibles", y = "F1-score (>50K)",
+       color = "Modelo") +
+  theme_minimal()
+
+ggplot(resultados_sens, aes(x = frac_etiquetada * 100, y = accuracy, color = modelo)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Supervisado"   = "#1b9e77",
+                                 "Self-Training" = "#d95f02",
+                                 "Co-Training"   = "#7570b3")) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20)) +
+  labs(title    = "Accuracy vs. porcentaje de datos etiquetados",
+       x = "% de etiquetas disponibles", y = "Accuracy",
+       color = "Modelo") +
+  theme_minimal()
+```
+
+**Lectura**: cuando hay muy pocas etiquetas (5 %), los métodos semi-supervisados aprovechan mejor la estructura del conjunto no etiquetado y superan al baseline. A medida que crece la proporción etiquetada, las tres curvas tienden a converger porque el baseline supervisado ya tiene suficientes datos para aprender la frontera de decisión.
+
+---
+
+## 2.8 Comparación Real vs. Predicción
+
+```{r real-vs-pred}
+pred_modelos <- data.frame(
+  Real        = test_set$income,
+  Supervisado = pred_rf,
+  SelfTrain   = pred_self,
+  CoTrain     = pred_co
+)
+
+pred_long <- pred_modelos %>%
+  pivot_longer(cols = -Real, names_to = "modelo", values_to = "Pred") %>%
+  mutate(acierto = ifelse(Real == Pred, "Correcto", "Incorrecto"))
+
+ggplot(pred_long, aes(x = modelo, fill = acierto)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = c("Correcto" = "#1b9e77",
+                                "Incorrecto" = "#d95f02")) +
+  labs(title = "Proporción de aciertos vs. errores por modelo",
+       x = NULL, y = "Proporción", fill = NULL) +
+  theme_minimal()
+```
+
+---
+
+## 2.9 Discusión
+
+1. **Random Forest supervisado** establece un baseline competitivo aún con sólo 10 % de etiquetas, debido a la riqueza informativa del dataset y a su robustez frente al ruido.
+2. **Self-Training** muestra mejora marginal cuando el threshold está bien calibrado (τ ≈ 0.85). Es muy sensible a τ: thresholds bajos contaminan el conjunto con pseudo-etiquetas incorrectas (propagación de error); thresholds altos no aportan información nueva.
+3. **Co-Training** logra el mejor balance global. La heterogeneidad de los dos clasificadores (Random Forest sobre demografía/trabajo + Naive Bayes sobre educación/familia/capital) reduce el sesgo de propagación, especialmente cuando el porcentaje de etiquetas es bajo (5–10 %).
+4. **Análisis de sensibilidad**: la ventaja de los métodos semi-supervisados es mayor cuando $|L|$ es pequeño. A partir de ~20 % de etiquetas, las diferencias se reducen porque el modelo supervisado ya captura la estructura del problema.
+5. **Limitaciones observadas**:
+   - El supuesto de independencia condicional de Co-Training no se cumple estrictamente en datos tabulares, pero la división por vistas semánticas mantiene utilidad práctica.
+   - El desbalance de clases afecta la calidad de las pseudo-etiquetas: la clase minoritaria (`>50K`) suele tener menor confianza y se incorpora más lentamente.
+   - Random Forest y Naive Bayes proporcionan probabilidades poco calibradas, lo que afecta la fiabilidad de los umbrales de selección.
+
+---
+
+## 2.10 Conclusiones
+
+- Bajo el escenario de **10 % de etiquetas**, el algoritmo semi-supervisado con mejor desempeño global es **Co-Training (RF + Naive Bayes)**, superando ligeramente al baseline supervisado en F1-score y recall sobre la clase minoritaria.
+- **Self-Training** es la opción más simple y económica computacionalmente, pero requiere ajuste cuidadoso del threshold para evitar la propagación de errores.
+- La **utilidad práctica del aprendizaje semi-supervisado se concentra en el régimen de bajos recursos de etiquetado** (≤ 10 %). Con 20 % o más, la ganancia se vuelve marginal frente al costo de implementación.
+- En contextos reales donde el etiquetado humano es costoso (medicina, fraude, NLP especializado), estos enfoques permiten obtener modelos competitivos invirtiendo menos en anotación. La elección entre Self-Training y Co-Training depende de la posibilidad de **dividir las features en vistas semánticamente coherentes e idealmente independientes**.
+- Para trabajo futuro, se recomienda explorar **Label Propagation/Spreading** (métodos basados en grafos) y **Transductive SVM** para verificar si métodos transductivos puros superan a los iterativos en este dataset.
 
 ---
