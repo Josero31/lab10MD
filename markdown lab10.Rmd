@@ -5,3 +5,343 @@ date: "2026-05-15"
 output: html_document
 ---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(scales)
+```
+
+---
+
+## Introducción
+
+El presente laboratorio aplica técnicas de **aprendizaje semi-supervisado** sobre el dataset *Adult Income* (UCI Machine Learning Repository). El objetivo es comparar modelos supervisados puros contra algoritmos semi-supervisados bajo un escenario donde solo una fracción pequeña de los datos de entrenamiento posee etiqueta.
+
+El dataset fue recolectado a partir del Censo de los Estados Unidos de 1994 y contiene información socioeconómica de individuos. La variable objetivo indica si el ingreso anual de una persona supera o no los USD 50,000.
+
+---
+
+## Selección y Descripción del Dataset
+
+**Fuente:** UCI Machine Learning Repository — *Adult Income Dataset*
+**URL:** https://archive.ics.uci.edu/dataset/2/adult
+**Dimensiones:** 48,842 filas × 15 columnas
+**Variable objetivo:** `income` — binaria (`<=50K` / `>50K`)
+
+El dataset cumple con los requisitos mínimos del laboratorio: más de 1,000 filas, más de 8 columnas, fuente pública y confiable, y tarea de clasificación binaria apta para el escenario semi-supervisado.
+
+---
+
+## Análisis Exploratorio de Datos
+
+### Carga del Dataset
+
+```{r carga}
+df <- read.csv("adult_incomeDATA.csv",
+               stringsAsFactors = TRUE,
+               na.strings        = c("NA", ""))
+
+cat("Dimensiones:", nrow(df), "x", ncol(df), "\n")
+```
+
+### Tipos de Variables y Estructura
+
+```{r estructura}
+str(df)
+```
+
+El dataset contiene dos tipos principales de variables:
+
+| Tipo       | Variables |
+|------------|-----------|
+| **Numéricas** (6) | `age`, `fnlwgt`, `education_num`, `capital_gain`, `capital_loss`, `hours_per_week` |
+| **Categóricas** (9) | `workclass`, `education`, `marital_status`, `occupation`, `relationship`, `race`, `sex`, `native_country`, `income` |
+
+### Resumen Estadístico
+
+```{r resumen}
+summary(df)
+```
+
+### Valores Faltantes
+
+```{r nas}
+na_conteo <- colSums(is.na(df))
+na_df     <- data.frame(variable = names(na_conteo),
+                        faltantes = as.integer(na_conteo)) %>%
+             filter(faltantes > 0) %>%
+             arrange(desc(faltantes))
+
+print(na_df)
+
+ggplot(na_df, aes(x = reorder(variable, -faltantes), y = faltantes)) +
+  geom_col(fill = "#d95f02") +
+  geom_text(aes(label = faltantes), vjust = -0.4, size = 3.5) +
+  labs(title = "Valores faltantes por variable",
+       x = "Variable", y = "Cantidad de NAs") +
+  theme_minimal()
+```
+
+Las variables con valores faltantes son `workclass` (2,799), `occupation` (2,809) y `native_country` (857), representando en conjunto un ~8% del total. Se optará por eliminación de filas con NA dado que el volumen de datos es suficientemente grande para absorber esta pérdida sin afectar la representatividad.
+
+---
+
+### Balance de Clases
+
+```{r balance}
+balance <- df %>%
+  filter(!is.na(income)) %>%
+  count(income) %>%
+  mutate(porcentaje = n / sum(n) * 100)
+
+print(balance)
+
+ggplot(balance, aes(x = income, y = n, fill = income)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = paste0(round(porcentaje, 1), "%")),
+            vjust = -0.4, size = 4.5) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  labs(title  = "Distribución de la variable objetivo (income)",
+       x = "Clase", y = "Frecuencia") +
+  theme_minimal()
+```
+
+Existe **desbalance de clases**: el 75.9% de los individuos gana `<=50K` y el 24.1% gana `>50K`. Esto deberá considerarse al elegir métricas de evaluación (F1-score y recall son más informativas que accuracy en este caso) y al definir estrategias de muestreo en los modelos.
+
+---
+
+### Distribución de Variables Numéricas
+
+```{r dist-numericas}
+numericas <- df %>%
+  select(age, education_num, capital_gain, capital_loss, hours_per_week)
+
+numericas_long <- numericas %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "valor")
+
+ggplot(numericas_long, aes(x = valor)) +
+  geom_histogram(bins = 35, fill = "#2166ac", color = "white", alpha = 0.85) +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Distribución de variables numéricas",
+       x = NULL, y = "Frecuencia") +
+  theme_minimal()
+```
+
+- **`age`**: distribución aproximadamente normal, concentrada entre 25–55 años.
+- **`education_num`**: discreta; pico en niveles 9 (HS-grad) y 13 (Bachelors).
+- **`capital_gain` / `capital_loss`**: fuertemente sesgadas a la derecha — la mayoría de individuos reporta cero ganancias/pérdidas de capital.
+- **`hours_per_week`**: pico marcado en 40 horas, con cola derecha.
+
+---
+
+### Distribución de Variables Categóricas Clave
+
+```{r dist-categoricas}
+# Workclass
+ggplot(df %>% filter(!is.na(workclass)),
+       aes(x = fct_infreq(workclass), fill = income)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  labs(title = "Workclass vs. Income (proporción)",
+       x = NULL, y = "Proporción", fill = "Income") +
+  theme_minimal()
+
+# Education
+ggplot(df %>% filter(!is.na(education)),
+       aes(x = fct_infreq(education), fill = income)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  labs(title = "Nivel educativo vs. Income (proporción)",
+       x = NULL, y = "Proporción", fill = "Income") +
+  theme_minimal()
+
+# Sex
+ggplot(df, aes(x = sex, fill = income)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  labs(title = "Sexo vs. Income (proporción)",
+       x = NULL, y = "Proporción", fill = "Income") +
+  theme_minimal()
+```
+
+- El sector **Self-emp-inc** y **Federal-gov** concentran mayor proporción de ingresos `>50K`.
+- A mayor nivel educativo (Doctorate, Prof-school, Masters), mayor proporción de `>50K`.
+- Existe una diferencia notable entre sexos: los hombres presentan mayor tasa de `>50K`.
+
+---
+
+### Variables Numéricas vs. Clase Objetivo
+
+```{r boxplots}
+df_box <- df %>%
+  select(income, age, education_num, hours_per_week) %>%
+  filter(!is.na(income)) %>%
+  pivot_longer(-income, names_to = "variable", values_to = "valor")
+
+ggplot(df_box, aes(x = income, y = valor, fill = income)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.5, show.legend = FALSE) +
+  facet_wrap(~variable, scales = "free_y") +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  labs(title = "Variables numéricas según clase de ingreso",
+       x = "Income", y = NULL) +
+  theme_minimal()
+```
+
+Las personas con ingresos `>50K` tienden a ser de mayor edad, con más años de educación formal y más horas de trabajo semanales — lo que sugiere que estas variables tienen poder discriminativo relevante.
+
+---
+
+### Correlación entre Variables Numéricas
+
+```{r correlacion}
+num_vars <- df %>%
+  select(age, fnlwgt, education_num, capital_gain, capital_loss, hours_per_week) %>%
+  cor(use = "complete.obs")
+
+num_df <- as.data.frame(as.table(num_vars))
+names(num_df) <- c("Var1", "Var2", "Correlacion")
+
+ggplot(num_df, aes(x = Var1, y = Var2, fill = Correlacion)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Correlacion, 2)), size = 3) +
+  scale_fill_gradient2(low = "#d73027", mid = "white", high = "#1a9641",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(title = "Matriz de correlación — variables numéricas",
+       x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Las correlaciones entre variables numéricas son en general bajas, lo que indica poca multicolinealidad. `education_num` y `age` tienen una correlación modesta positiva con los ingresos altos (como ya se vio en los boxplots). `fnlwgt` (peso censal) no muestra relación relevante con otras variables.
+
+---
+
+## Preprocesamiento de Datos
+
+### Limpieza: Eliminación de Valores Faltantes
+
+```{r limpieza}
+df_clean <- na.omit(df)
+cat("Filas originales :", nrow(df), "\n")
+cat("Filas tras omitir NAs:", nrow(df_clean), "\n")
+cat("Filas eliminadas  :", nrow(df) - nrow(df_clean), "(",
+    round((nrow(df) - nrow(df_clean)) / nrow(df) * 100, 1), "% )\n")
+```
+
+Se eliminan las 3,620 filas con al menos un NA (~7.4%), estrategia válida dado el amplio volumen de datos restante (45,222 filas).
+
+### Eliminación de `fnlwgt`
+
+```{r fnlwgt}
+df_clean$fnlwgt <- NULL
+cat("Columnas finales:", ncol(df_clean), "\n")
+```
+
+La variable `fnlwgt` es un peso de muestreo censal que no aporta información predictiva sobre el ingreso individual. Se elimina del análisis.
+
+### Codificación de la Variable Objetivo
+
+```{r codificar-target}
+df_clean$income <- ifelse(df_clean$income == ">50K", 1L, 0L)
+df_clean$income <- as.factor(df_clean$income)
+
+cat("Distribución del target tras recodificación:\n")
+print(table(df_clean$income))
+print(prop.table(table(df_clean$income)))
+```
+
+La variable `income` se convierte a factor binario: `1` para `>50K` y `0` para `<=50K`, lo que es requerido por los clasificadores de R.
+
+### Normalización de Variables Numéricas
+
+```{r normalizacion}
+num_cols <- c("age", "education_num", "capital_gain",
+              "capital_loss", "hours_per_week")
+
+df_clean[num_cols] <- scale(df_clean[num_cols])
+
+cat("Verificación post-normalización (medias deben ser ~0):\n")
+round(colMeans(df_clean[num_cols]), 4)
+```
+
+Las variables numéricas se estandarizan (media = 0, desviación estándar = 1) mediante Z-score. Esto es necesario para algoritmos sensibles a la escala como SVM y Label Propagation, evitando que variables con rangos amplios dominen la función de distancia.
+
+### Variables Categóricas: Verificación de Factores
+
+```{r categoricas}
+cat_cols <- sapply(df_clean, is.factor)
+cat("Variables categóricas (factores):", sum(cat_cols) - 1, "\n")  # -1 por income
+cat(names(cat_cols[cat_cols]), "\n")
+```
+
+Las variables categóricas ya están codificadas como factores en R desde la carga con `stringsAsFactors = TRUE`. Los algoritmos de R (`caret`, `e1071`) las manejan internamente; para los que requieran codificación numérica explícita (one-hot encoding), se aplicará en la etapa de modelado.
+
+### Resumen del Dataset Preprocesado
+
+```{r resumen-final}
+cat("Dataset final:\n")
+cat("  Filas     :", nrow(df_clean), "\n")
+cat("  Columnas  :", ncol(df_clean), "\n")
+cat("  Numéricas :", sum(sapply(df_clean, is.numeric)), "\n")
+cat("  Categóricas:", sum(sapply(df_clean, is.factor)), "\n")
+cat("\nBalance de clases final:\n")
+print(prop.table(table(df_clean$income)))
+```
+
+---
+
+## Diseño del Escenario Semi-Supervisado
+
+```{r particion}
+set.seed(42)
+
+# Separar test (20% del total, siempre etiquetado)
+test_idx  <- sample(seq_len(nrow(df_clean)), size = 0.2 * nrow(df_clean))
+test_set  <- df_clean[test_idx, ]
+train_all <- df_clean[-test_idx, ]
+
+# De los datos de entrenamiento, etiquetar solo el 10%
+label_frac  <- 0.10
+labeled_idx <- sample(seq_len(nrow(train_all)),
+                      size = label_frac * nrow(train_all))
+
+labeled_set   <- train_all[labeled_idx, ]
+unlabeled_set <- train_all[-labeled_idx, ]
+unlabeled_set$income <- NA
+
+cat("=== Partición del dataset ===\n")
+cat("Conjunto etiquetado   :", nrow(labeled_set),
+    "(", round(nrow(labeled_set)/nrow(df_clean)*100, 1), "% del total)\n")
+cat("Conjunto no etiquetado:", nrow(unlabeled_set),
+    "(", round(nrow(unlabeled_set)/nrow(df_clean)*100, 1), "% del total)\n")
+cat("Conjunto de prueba    :", nrow(test_set),
+    "(", round(nrow(test_set)/nrow(df_clean)*100, 1), "% del total)\n")
+```
+
+```{r grafico-particion}
+particion_df <- data.frame(
+  conjunto   = c("Etiquetado\n(train)", "No etiquetado\n(train)", "Prueba\n(test)"),
+  n          = c(nrow(labeled_set), nrow(unlabeled_set), nrow(test_set)),
+  tipo       = c("Etiquetado", "No etiquetado", "Test")
+)
+
+ggplot(particion_df, aes(x = reorder(conjunto, n), y = n, fill = tipo)) +
+  geom_col(width = 0.55, show.legend = FALSE) +
+  geom_text(aes(label = scales::comma(n)), hjust = -0.1, size = 4) +
+  coord_flip() +
+  scale_fill_manual(values = c("#1b9e77", "#7570b3", "#d95f02")) +
+  scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.15))) +
+  labs(title = "Distribución de los conjuntos de datos",
+       subtitle = "Escenario semi-supervisado (10% etiquetado)",
+       x = NULL, y = "Número de observaciones") +
+  theme_minimal()
+```
+
+La partición simula un escenario realista donde el etiquetado manual es costoso. Solo el **10% del conjunto de entrenamiento** posee etiqueta conocida (~3,617 muestras), mientras que el **90% restante** (~32,561 muestras) se tratará como no etiquetado en los algoritmos semi-supervisados. El conjunto de prueba (9,044 muestras) permanece completamente etiquetado para evaluación objetiva.
+
+---
