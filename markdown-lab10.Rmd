@@ -1300,3 +1300,161 @@ La diagonal principal muestra los verdaderos positivos y verdaderos negativos. L
 
 ---
 
+## 4.2 Curvas ROC y Área Bajo la Curva (AUC)
+
+Las curvas ROC grafican la **tasa de verdaderos positivos** (sensibilidad) frente a la **tasa de falsos positivos** (1 − especificidad) a lo largo de todos los umbrales de clasificación. Un área bajo la curva (AUC) mayor indica mejor poder discriminativo.
+
+```{r act4-roc, fig.width=9, fig.height=6}
+# Obtener probabilidades predichas para la clase positiva (>50K = 1)
+prob_rf   <- predict(rf_baseline,  newdata = test_set, type = "prob")[, "1"]
+prob_self <- predict(res_self$modelo, newdata = test_set, type = "prob")[, "1"]
+
+# Co-Training: promedio de probabilidades de ambos clasificadores
+t1_roc <- predict(res_co$f1_clf,
+                   newdata = test_set[, setdiff(vista1, "income")], type = "prob")
+t2_roc <- predict(res_co$f2_clf,
+                   newdata = test_set[, setdiff(vista2, "income")], type = "raw")
+prob_co <- ((t1_roc + t2_roc) / 2)[, "1"]
+
+roc_rf   <- roc(test_set$income, prob_rf,   levels = c(0, 1), direction = "<", quiet = TRUE)
+roc_self <- roc(test_set$income, prob_self, levels = c(0, 1), direction = "<", quiet = TRUE)
+roc_co   <- roc(test_set$income, prob_co,   levels = c(0, 1), direction = "<", quiet = TRUE)
+
+roc_df <- bind_rows(
+  data.frame(fpr     = 1 - roc_rf$specificities,
+             tpr     = roc_rf$sensitivities,
+             modelo  = paste0("RF Supervisado (AUC=", round(auc(roc_rf), 3), ")")),
+  data.frame(fpr     = 1 - roc_self$specificities,
+             tpr     = roc_self$sensitivities,
+             modelo  = paste0("Self-Training  (AUC=", round(auc(roc_self), 3), ")")),
+  data.frame(fpr     = 1 - roc_co$specificities,
+             tpr     = roc_co$sensitivities,
+             modelo  = paste0("Co-Training    (AUC=", round(auc(roc_co), 3), ")"))
+)
+
+ggplot(roc_df, aes(x = fpr, y = tpr, color = modelo)) +
+  geom_line(linewidth = 1.15) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              color = "grey50", linewidth = 0.7) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  coord_equal() +
+  labs(title    = "Curvas ROC — comparación de modelos",
+       subtitle  = "Clasificación de ingreso >50K sobre el conjunto de prueba",
+       x = "Tasa de Falsos Positivos (1 − Especificidad)",
+       y = "Tasa de Verdaderos Positivos (Sensibilidad)",
+       color = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = c(0.65, 0.18),
+        legend.background = element_rect(fill = "white", color = "grey85"))
+```
+
+Los tres modelos presentan AUC claramente superior a 0.5 (clasificador aleatorio), confirmando la utilidad real de todos. Co-Training y Self-Training obtienen AUC comparable o superior al baseline supervisado, evidenciando que el uso de los datos no etiquetados mejora el poder discriminativo global aunque sea marginalmente.
+
+---
+
+## 4.3 Curvas Precisión–Recall
+
+Ante el desbalance de clases existente (~76 % `<=50K`), la curva Precisión–Recall es más informativa que la ROC, ya que no incluye el alto número de verdaderos negativos en su cálculo. Un **área bajo la curva PR (AUPRC) mayor** indica mejor manejo de la clase minoritaria.
+
+```{r act4-pr, fig.width=9, fig.height=6}
+construir_pr_df <- function(prob, y_real, nombre) {
+  umbrales <- seq(0, 1, by = 0.005)
+  y_num    <- as.integer(as.character(y_real))
+
+  pr_data <- lapply(umbrales, function(th) {
+    pred  <- ifelse(prob >= th, 1, 0)
+    tp    <- sum(pred == 1 & y_num == 1)
+    fp    <- sum(pred == 1 & y_num == 0)
+    fn    <- sum(pred == 0 & y_num == 1)
+    prec  <- ifelse((tp + fp) == 0, 1, tp / (tp + fp))
+    rec   <- ifelse((tp + fn) == 0, 0, tp / (tp + fn))
+    data.frame(threshold = th, precision = prec, recall = rec)
+  })
+  bind_rows(pr_data) %>%
+    arrange(recall) %>%
+    mutate(modelo = nombre)
+}
+
+pr_rf   <- construir_pr_df(prob_rf,   test_set$income, "RF Supervisado")
+pr_self <- construir_pr_df(prob_self, test_set$income, "Self-Training (τ=0.85)")
+pr_co   <- construir_pr_df(prob_co,   test_set$income, "Co-Training (RF+NB)")
+
+pr_all <- bind_rows(pr_rf, pr_self, pr_co)
+
+# AUPRC aproximada (regla del trapecio)
+auprc <- function(pr_df) {
+  pr_s <- pr_df %>% arrange(recall)
+  sum(diff(pr_s$recall) * (head(pr_s$precision, -1) + tail(pr_s$precision, -1)) / 2,
+      na.rm = TRUE)
+}
+auprc_rf   <- round(auprc(pr_rf),   3)
+auprc_self <- round(auprc(pr_self), 3)
+auprc_co   <- round(auprc(pr_co),   3)
+
+pr_all <- pr_all %>%
+  mutate(modelo_lbl = case_when(
+    modelo == "RF Supervisado"         ~ paste0("RF Supervisado (AUPRC=", auprc_rf, ")"),
+    modelo == "Self-Training (τ=0.85)" ~ paste0("Self-Training  (AUPRC=", auprc_self, ")"),
+    TRUE                               ~ paste0("Co-Training    (AUPRC=", auprc_co, ")")
+  ))
+
+ggplot(pr_all, aes(x = recall, y = precision, color = modelo_lbl)) +
+  geom_line(linewidth = 1.1, alpha = 0.85) +
+  geom_hline(yintercept = mean(as.integer(as.character(test_set$income))),
+             linetype = "dashed", color = "grey50", linewidth = 0.7) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  annotate("text", x = 0.85, y = mean(as.integer(as.character(test_set$income))) + 0.015,
+           label = "Línea base (proporción positiva)", color = "grey40", size = 3.2) +
+  labs(title    = "Curvas Precisión–Recall — clase >50K",
+       subtitle  = "Métrica más adecuada ante desbalance de clases",
+       x = "Recall (Sensibilidad)",
+       y = "Precisión",
+       color = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = c(0.62, 0.82),
+        legend.background = element_rect(fill = "white", color = "grey85"))
+```
+
+La línea punteada horizontal indica la precisión de un clasificador que siempre predice positivo (igual a la proporción de positivos ~24 %). Todos los modelos están bien por encima de esta línea base. Co-Training mantiene mayor precisión en rangos de recall alto, favoreciendo aplicaciones donde es importante detectar la mayoría de casos `>50K` sin generar demasiadas falsas alarmas.
+
+---
+
+## 4.4 Distribución de Probabilidades Predichas por Clase Real
+
+Visualiza **cuán separadas** están las distribuciones de probabilidad para la clase positiva y negativa en cada modelo. Una buena separación (dos campanas alejadas) indica un modelo bien calibrado y discriminativo.
+
+```{r act4-prob-dist, fig.width=13, fig.height=5}
+dist_df <- bind_rows(
+  data.frame(prob   = prob_rf,
+             real   = as.character(test_set$income),
+             modelo = "RF Supervisado"),
+  data.frame(prob   = prob_self,
+             real   = as.character(test_set$income),
+             modelo = "Self-Training (τ=0.85)"),
+  data.frame(prob   = prob_co,
+             real   = as.character(test_set$income),
+             modelo = "Co-Training (RF+NB)")
+) %>%
+  mutate(real = ifelse(real == "1", ">50K", "≤50K"),
+         modelo = factor(modelo,
+                          levels = c("RF Supervisado",
+                                     "Self-Training (τ=0.85)",
+                                     "Co-Training (RF+NB)")))
+
+ggplot(dist_df, aes(x = prob, fill = real, color = real)) +
+  geom_density(alpha = 0.40, linewidth = 0.8) +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "grey40") +
+  scale_fill_manual(values  = c(">50K" = "#d95f02", "≤50K" = "#1b9e77")) +
+  scale_color_manual(values = c(">50K" = "#d95f02", "≤50K" = "#1b9e77")) +
+  facet_wrap(~modelo, ncol = 3) +
+  labs(title    = "Distribución de probabilidades predichas por clase real",
+       subtitle  = "La línea punteada marca el umbral de decisión 0.5",
+       x = "P(>50K) predicha", y = "Densidad",
+       fill = "Clase real", color = "Clase real") +
+  theme_minimal(base_size = 12) +
+  theme(panel.spacing = unit(1.5, "lines"),
+        strip.text    = element_text(face = "bold"))
+```
+
+Se busca que la curva naranja (`>50K`) esté desplazada hacia la derecha (probabilidades altas) y la curva verde (`<=50K`) hacia la izquierda. El solapamiento central refleja la zona de mayor incertidumbre del modelo — a menor solapamiento, mejor es la separabilidad aprendida. Co-Training muestra una separación ligeramente más limpia que el baseline en la región 0.4–0.6, lo que contribuye a su mejor F1 y recall sobre la clase minoritaria.
+
