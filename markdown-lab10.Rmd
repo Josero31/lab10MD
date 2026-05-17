@@ -1694,3 +1694,4 @@ knitr::kable(resumen_visual,
 **Conclusión de la Actividad 4:** El análisis visual confirma de manera consistente que los algoritmos semi-supervisados — especialmente Co-Training — ofrecen una ventaja real sobre el baseline supervisado en el régimen de bajos recursos de etiquetado (≤ 10 %), particularmente en la detección de la clase minoritaria (`>50K`). Esta ventaja es visible en las curvas ROC y PR, en las matrices de confusión (menor tasa de falsos negativos), y en las distribuciones de probabilidad (mejor separabilidad). La comparación individual revela que las predicciones incorrectas son en su mayoría compartidas por los tres modelos, lo que indica que se trata de observaciones inherentemente ambiguas y no de fallas sistemáticas de ningún algoritmo en particular.
 
 ---
+
