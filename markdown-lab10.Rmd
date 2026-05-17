@@ -1458,3 +1458,239 @@ ggplot(dist_df, aes(x = prob, fill = real, color = real)) +
 
 Se busca que la curva naranja (`>50K`) esté desplazada hacia la derecha (probabilidades altas) y la curva verde (`<=50K`) hacia la izquierda. El solapamiento central refleja la zona de mayor incertidumbre del modelo — a menor solapamiento, mejor es la separabilidad aprendida. Co-Training muestra una separación ligeramente más limpia que el baseline en la región 0.4–0.6, lo que contribuye a su mejor F1 y recall sobre la clase minoritaria.
 
+---
+
+## 4.5 Evolución del Error de Self-Training por Iteración
+
+Muestra cómo evolucionan simultáneamente el **tamaño del conjunto etiquetado** (crece con cada iteración) y el **F1-score en test** durante el proceso de pseudo-etiquetado iterativo.
+
+```{r act4-evol-error, fig.width=9, fig.height=5.5}
+hist_self <- res_self$historia %>%
+  mutate(
+    error_test    = 1 - f1_test,          # error como complemento del F1
+    n_etiquetados = n_label / 1000        # en miles para doble eje
+  )
+
+coef_eje <- max(hist_self$error_test) / max(hist_self$n_etiquetados)
+
+ggplot(hist_self, aes(x = iter)) +
+  geom_col(aes(y = n_etiquetados * coef_eje),
+           fill = "#bdc9e1", alpha = 0.6, width = 0.5) +
+  geom_line(aes(y = error_test, color = "Error (1−F1) en test"),
+            linewidth = 1.4) +
+  geom_point(aes(y = error_test, color = "Error (1−F1) en test"),
+             size = 3.5) +
+  geom_text(aes(y = error_test,
+                label = paste0("F1=", round(f1_test, 3))),
+            vjust = -0.9, size = 3.5, color = "#d95f02") +
+  scale_y_continuous(
+    name      = "Error del modelo (1 − F1)",
+    sec.axis  = sec_axis(~ . / coef_eje,
+                          name  = "Tamaño conjunto L (miles)",
+                          labels = scales::comma)
+  ) +
+  scale_color_manual(values = c("Error (1−F1) en test" = "#d95f02")) +
+  scale_x_continuous(breaks = hist_self$iter) +
+  labs(title    = "Evolución de Self-Training: error y tamaño del conjunto etiquetado",
+       subtitle  = "Barras grises = L acumulado (eje derecho) | Línea = error en test (eje izquierdo)",
+       x = "Iteración", color = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position    = "top",
+        axis.title.y.right = element_text(color = "grey50"))
+```
+
+A medida que Self-Training agrega pseudo-etiquetas de alta confianza (umbral τ = 0.85), el tamaño de `L` crece y el error en test tiende a reducirse. La velocidad de convergencia depende de cuántas muestras superan el umbral en cada ronda: con τ alto, el crecimiento es más lento pero las pseudo-etiquetas son más fiables. El gráfico permite detectar si el error vuelve a subir en alguna iteración (señal de propagación de errores).
+
+---
+
+## 4.6 Curvas de Desempeño vs. % de Etiquetas — Cuatro Métricas
+
+Se amplía la visualización de la sección 2.7 presentando las cuatro métricas (**F1, Accuracy, Recall, Precision**) en paneles separados para una comparación más completa, usando los datos del análisis granular (sección 3.5).
+
+```{r act4-curvas-metricas, fig.width=13, fig.height=9}
+# Reconstruir resultados_sens en formato largo con todas las métricas
+sens_full <- lapply(fracs_g, function(fr) {
+  idx <- sample(seq_len(nrow(train_all)), size = fr * nrow(train_all))
+  Lf  <- train_all[idx, ]
+  Uf  <- train_all[-idx, ]; Uf$income <- NA
+
+  set.seed(55 + as.integer(fr * 100))
+
+  m_sup <- randomForest(income ~ ., data = Lf, ntree = 120, mtry = 4)
+  p_sup <- predict(m_sup, newdata = test_set)
+  met_sup <- calcular_metricas(test_set$income, p_sup, "Supervisado") %>%
+    mutate(frac = fr)
+
+  rs    <- self_training(Lf, Uf, test_set, threshold = 0.85, max_iter = 2, ntree = 60)
+  p_st  <- predict(rs$modelo, newdata = test_set)
+  met_st <- calcular_metricas(test_set$income, p_st, "Self-Training") %>%
+    mutate(frac = fr)
+
+  rc    <- co_training(Lf, Uf, test_set, max_iter = 2, k_top = 300)
+  t1b   <- predict(rc$f1_clf, newdata = test_set[, setdiff(vista1, "income")], type = "prob")
+  t2b   <- predict(rc$f2_clf, newdata = test_set[, setdiff(vista2, "income")], type = "raw")
+  pab   <- (t1b + t2b) / 2
+  p_ct  <- factor(colnames(pab)[apply(pab, 1, which.max)], levels = c(0, 1))
+  met_ct <- calcular_metricas(test_set$income, p_ct, "Co-Training") %>%
+    mutate(frac = fr)
+
+  bind_rows(met_sup, met_st, met_ct)
+}) %>% bind_rows()
+
+sens_long4 <- sens_full %>%
+  pivot_longer(cols = c(accuracy, precision, recall, f1),
+               names_to = "metrica", values_to = "valor") %>%
+  mutate(metrica = factor(metrica,
+                           levels = c("f1", "accuracy", "recall", "precision"),
+                           labels = c("F1-score", "Accuracy", "Recall", "Precision")))
+
+ggplot(sens_long4, aes(x = frac * 100, y = valor, color = modelo)) +
+  geom_line(linewidth = 1.05) +
+  geom_point(size = 2.5) +
+  facet_wrap(~metrica, ncol = 2, scales = "free_y") +
+  scale_color_manual(values = c("Supervisado"   = "#1b9e77",
+                                 "Self-Training" = "#d95f02",
+                                 "Co-Training"   = "#7570b3")) +
+  scale_x_continuous(breaks = fracs_g * 100) +
+  labs(title    = "Curvas de desempeño vs. porcentaje de etiquetas — cuatro métricas",
+       subtitle  = "Comparación supervisado vs. semi-supervisados",
+       x = "% de datos etiquetados disponibles",
+       y = "Valor de la métrica",
+       color = "Modelo") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position  = "top",
+        panel.spacing    = unit(1, "lines"),
+        strip.text       = element_text(face = "bold", size = 11))
+```
+
+El panel de **Recall** es el más revelador: en el régimen de muy pocas etiquetas (3–7 %), los métodos semi-supervisados consiguen recuperar una proporción mayor de los casos `>50K` gracias a los pseudo-etiquetados. El panel de **Precision** muestra la compensación clásica (precision–recall tradeoff): al aumentar el recall, la precisión desciende levemente. La métrica **F1** integra ambos y confirma a Co-Training como la alternativa más consistente.
+
+---
+
+## 4.7 Heatmap Comparativo de Métricas × Modelos
+
+Ofrece una vista de "semáforo" sobre toda la tabla de resultados, permitiendo identificar de un vistazo cuál modelo domina en cada métrica.
+
+```{r act4-heatmap-metricas, fig.width=9, fig.height=4.5}
+metricas_finales <- bind_rows(metricas_rf, metricas_self, metricas_co) %>%
+  pivot_longer(cols = c(accuracy, precision, recall, f1),
+               names_to = "metrica", values_to = "valor") %>%
+  mutate(
+    metrica = factor(metrica,
+                      levels = c("accuracy", "precision", "recall", "f1"),
+                      labels = c("Accuracy", "Precision", "Recall", "F1-score")),
+    modelo  = factor(modelo,
+                      levels = c("RF Supervisado (10% labels)",
+                                 "Self-Training (τ=0.85)",
+                                 "Co-Training (RF + NB)"))
+  )
+
+ggplot(metricas_finales, aes(x = metrica, y = modelo, fill = valor)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = sprintf("%.4f", valor)),
+            size = 5, fontface = "bold",
+            color = ifelse(metricas_finales$valor > 0.80, "white", "black")) +
+  scale_fill_gradient2(low  = "#fff5f0",
+                       mid  = "#fc8d59",
+                       high = "#b30000",
+                       midpoint = median(metricas_finales$valor),
+                       name = "Valor") +
+  labs(title    = "Heatmap comparativo de métricas — todos los modelos",
+       subtitle  = "Colores más intensos = mejor desempeño",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y  = element_text(face = "bold"),
+        axis.text.x  = element_text(face = "bold"),
+        legend.position = "right")
+```
+
+El heatmap confirma que **ningún modelo domina en todas las métricas**: el baseline supervisado puede mantener alta precisión a costa de menor recall, mientras que los semi-supervisados compensan mejorando el recall de la clase `>50K` con un costo marginal en precisión. La elección del "mejor" modelo depende del costo relativo del negocio entre falsos positivos (clasificar a alguien con `<=50K` como `>50K`) y falsos negativos (no identificar a alguien con `>50K`).
+
+---
+
+## 4.8 Comparación Real vs. Predicción — Muestra Individual
+
+El siguiente gráfico visualiza, para una muestra aleatoria de 300 observaciones del conjunto de prueba, si cada modelo **acertó o erró**, permitiendo identificar visualmente patrones de error sistemático (por ejemplo, si todos los modelos fallan en los mismos individuos).
+
+```{r act4-individual, fig.width=13, fig.height=5.5}
+set.seed(7)
+idx_muestra <- sample(seq_len(nrow(test_set)), 300)
+
+ind_df <- data.frame(
+  obs         = idx_muestra,
+  real        = as.integer(as.character(test_set$income[idx_muestra])),
+  RF          = as.integer(as.character(pred_rf[idx_muestra])),
+  SelfTrain   = as.integer(as.character(pred_self[idx_muestra])),
+  CoTrain     = as.integer(as.character(pred_co[idx_muestra]))
+) %>%
+  mutate(
+    aciertoRF   = ifelse(real == RF,        "Correcto", "Error"),
+    aciertoST   = ifelse(real == SelfTrain, "Correcto", "Error"),
+    aciertoCT   = ifelse(real == CoTrain,   "Correcto", "Error"),
+    rank_obs    = rank(obs, ties.method = "first")
+  ) %>%
+  pivot_longer(cols = starts_with("acierto"),
+               names_to = "modelo", values_to = "resultado") %>%
+  mutate(
+    modelo = recode(modelo,
+                    "aciertoRF" = "RF Supervisado",
+                    "aciertoST" = "Self-Training",
+                    "aciertoCT" = "Co-Training"),
+    modelo = factor(modelo,
+                    levels = c("RF Supervisado", "Self-Training", "Co-Training"))
+  )
+
+ggplot(ind_df, aes(x = rank_obs, y = modelo, color = resultado, shape = factor(real))) +
+  geom_point(size = 1.8, alpha = 0.75) +
+  scale_color_manual(values = c("Correcto" = "#1b9e77", "Error" = "#d95f02")) +
+  scale_shape_manual(values = c("0" = 16, "1" = 17),
+                     labels = c("0" = "≤50K", "1" = ">50K")) +
+  labs(title    = "Predicción vs. Real — 300 observaciones de prueba",
+       subtitle  = "Triángulos = clase >50K real | Círculos = clase ≤50K real",
+       x = "Observaciones ordenadas por índice",
+       y = NULL,
+       color = "Resultado",
+       shape = "Clase real") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x  = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid.major.x = element_blank())
+```
+
+Los **errores naranja concentrados en triángulos** (clase `>50K` mal clasificada) indican los falsos negativos — el tipo de error más costoso en este dominio si el objetivo es identificar contribuyentes de alto ingreso. Se aprecia que los errores de los tres modelos son más frecuentes en la misma región de observaciones (puntos en el eje x), lo que sugiere que se trata de casos **genuinamente difíciles** de clasificar, no de deficiencias algorítmicas aisladas.
+
+---
+
+## 4.9 Resumen Visual del Análisis Gráfico
+
+```{r act4-resumen-tabla}
+resumen_visual <- data.frame(
+  Gráfico      = c("Matrices de Confusión (4.1)",
+                   "Curvas ROC (4.2)",
+                   "Curvas Precisión–Recall (4.3)",
+                   "Distribución de Probabilidades (4.4)",
+                   "Evolución del Error — Self-Training (4.5)",
+                   "Curvas Desempeño vs. % Etiquetas (4.6)",
+                   "Heatmap Métricas × Modelos (4.7)",
+                   "Real vs. Predicción — Muestra (4.8)"),
+  Hallazgo_clave = c(
+    "Co-Training y Self-Training reducen falsos negativos de la clase >50K",
+    "AUC comparable entre modelos; semi-sup. ≥ baseline",
+    "AUPRC revela ventaja de Co-Training en recall alto sin sacrificar precisión",
+    "Co-Training ofrece mejor separación de distribuciones en zona de incertidumbre",
+    "F1 mejora o estabiliza con cada iteración; sin degradación observada",
+    "Ventaja semi-sup. máxima al 3–10% de etiquetas; converge con más datos",
+    "Co-Training domina en Recall y F1; baseline lidera en Accuracy bruta",
+    "Errores compartidos entre modelos → casos intrínsecamente difíciles"
+  )
+)
+
+knitr::kable(resumen_visual,
+             col.names = c("Visualización", "Hallazgo clave"),
+             align = c("l", "l"),
+             caption = "Resumen de hallazgos por gráfico — Actividad 4")
+```
+
+**Conclusión de la Actividad 4:** El análisis visual confirma de manera consistente que los algoritmos semi-supervisados — especialmente Co-Training — ofrecen una ventaja real sobre el baseline supervisado en el régimen de bajos recursos de etiquetado (≤ 10 %), particularmente en la detección de la clase minoritaria (`>50K`). Esta ventaja es visible en las curvas ROC y PR, en las matrices de confusión (menor tasa de falsos negativos), y en las distribuciones de probabilidad (mejor separabilidad). La comparación individual revela que las predicciones incorrectas son en su mayoría compartidas por los tres modelos, lo que indica que se trata de observaciones inherentemente ambiguas y no de fallas sistemáticas de ningún algoritmo en particular.
+
+---
