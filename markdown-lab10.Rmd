@@ -1234,3 +1234,69 @@ print(resumen_act3)
 - La prueba de Wilcoxon ofrece una verificación rápida de que las diferencias observadas no son ruido; con más repeticiones (≥ 10 semillas) sus conclusiones se tornarían más concluyentes.
 
 ---
+
+# Actividad 4 — Visualización y Análisis Gráfico
+
+> **Objetivo:** consolidar y enriquecer el análisis visual del laboratorio en una sección independiente y coherente. Se presentan: **(4.1)** matrices de confusión comparativas de los tres modelos; **(4.2)** curvas ROC con AUC; **(4.3)** curvas Precisión–Recall (más informativas ante desbalance de clases); **(4.4)** distribuciones de probabilidad predicha por clase real; **(4.5)** evolución del error de Self-Training iteración a iteración; **(4.6)** curvas de desempeño vs. porcentaje de etiquetas (F1, accuracy, recall, precision); **(4.7)** heatmap comparativo de todas las métricas y modelos; y **(4.8)** comparación real vs. predicción a nivel de muestra individual (gráfico de puntos).
+
+```{r act4-setup}
+# Librerías adicionales para las visualizaciones
+if (!requireNamespace("pROC",       quietly = TRUE)) install.packages("pROC")
+if (!requireNamespace("gridExtra",  quietly = TRUE)) install.packages("gridExtra")
+if (!requireNamespace("ggrepel",    quietly = TRUE)) install.packages("ggrepel")
+
+library(pROC)
+library(gridExtra)
+library(ggrepel)
+```
+
+---
+
+## 4.1 Matrices de Confusión Comparativas
+
+Se colocan en un solo panel las tres matrices de confusión (Random Forest supervisado, Self-Training y Co-Training) para facilitar la comparación visual. Se añade la tasa de error por celda para complementar las frecuencias absolutas.
+
+```{r act4-cm-comparativo, fig.width=14, fig.height=4.5}
+construir_cm_df <- function(y_real, y_pred, titulo) {
+  cm  <- as.data.frame(table(Real = y_real, Pred = y_pred))
+  tot <- sum(cm$Freq)
+  cm  <- cm %>%
+    group_by(Real) %>%
+    mutate(pct_fila = Freq / sum(Freq) * 100) %>%
+    ungroup() %>%
+    mutate(modelo = titulo)
+  cm
+}
+
+cm_rf   <- construir_cm_df(test_set$income, pred_rf,
+                            "RF Supervisado")
+cm_self <- construir_cm_df(test_set$income, pred_self,
+                            "Self-Training (τ=0.85)")
+cm_co   <- construir_cm_df(test_set$income, pred_co,
+                            "Co-Training (RF+NB)")
+
+cm_all <- bind_rows(cm_rf, cm_self, cm_co) %>%
+  mutate(modelo = factor(modelo,
+                          levels = c("RF Supervisado",
+                                     "Self-Training (τ=0.85)",
+                                     "Co-Training (RF+NB)")))
+
+ggplot(cm_all, aes(x = Pred, y = Real, fill = pct_fila)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = paste0(Freq, "\n(", round(pct_fila, 1), "%)")),
+            color = "black", size = 4.2, fontface = "bold") +
+  scale_fill_gradient(low = "#deebf7", high = "#08519c",
+                      name = "% por\nfila real") +
+  facet_wrap(~modelo, ncol = 3) +
+  labs(title    = "Matrices de Confusión — comparación de los tres modelos",
+       subtitle  = "Porcentajes calculados sobre la fila real (recall por clase)",
+       x = "Predicción", y = "Clase Real") +
+  theme_minimal(base_size = 12) +
+  theme(panel.spacing = unit(1.5, "lines"),
+        strip.text    = element_text(face = "bold", size = 11))
+```
+
+La diagonal principal muestra los verdaderos positivos y verdaderos negativos. La celda inferior-izquierda (Real=1, Pred=0) es la de mayor interés: los **falsos negativos** de la clase `>50K`. Se observa que tanto Self-Training como Co-Training reducen ligeramente los falsos negativos respecto al baseline supervisado, mejorando el recall de la clase minoritaria.
+
+---
+
