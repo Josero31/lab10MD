@@ -9,13 +9,20 @@ output:
     toc_depth: 3
     theme: flatly
     highlight: tango
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+    latex_engine: xelatex
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo = TRUE, warning = FALSE, message = FALSE,
-  cache = TRUE, cache.lazy = FALSE, autodep = TRUE
+  cache = TRUE, cache.lazy = FALSE, autodep = TRUE,
+  dev = "cairo_pdf",
+  fig.showtext = FALSE
 )
+knitr::knit_hooks$set(crop = NULL)
 library(tidyverse)
 library(scales)
 library(randomForest)
